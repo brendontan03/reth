@@ -7,13 +7,13 @@ use crate::{
 use alloy_eips::eip2718::WithEncoded;
 use alloy_primitives::B256;
 use futures_util::{FutureExt, Stream, StreamExt};
-use metrics::Histogram;
-use reth_chain_state::{CanonStateNotification, CanonStateNotifications, CanonStateSubscriptions};
+use metrics::{Gauge, Histogram};
+use op_alloy_rpc_types_engine::OpFlashblockPayloadBase;
+use reth_engine_primitives::ConsensusEngineHandle;
 use reth_evm::ConfigureEvm;
 use reth_metrics::Metrics;
-use reth_primitives_traits::{
-    AlloyBlockHeader, BlockTy, HeaderTy, NodePrimitives, ReceiptTy, Recovered,
-};
+use reth_payload_primitives::PayloadTypes;
+use reth_primitives_traits::{AlloyBlockHeader, BlockTy, HeaderTy, NodePrimitives, ReceiptTy};
 use reth_revm::cached::CachedReads;
 use reth_storage_api::{BlockReaderIdExt, StateProviderFactory};
 use reth_tasks::TaskExecutor;
@@ -35,6 +35,7 @@ pub(crate) const FB_STATE_ROOT_FROM_INDEX: usize = 9;
 /// [`FlashBlock`]s.
 #[derive(Debug)]
 pub struct FlashBlockService<
+    P: PayloadTypes,
     N: NodePrimitives,
     S,
     EvmConfig: ConfigureEvm<Primitives = N, NextBlockEnvCtx: Unpin>,
@@ -50,22 +51,20 @@ pub struct FlashBlockService<
     canon_receiver: CanonStateNotifications<N>,
     spawner: TaskExecutor,
     job: Option<BuildJob<N>>,
-    /// Cached state reads for the current block.
-    /// Current `PendingFlashBlock` is built out of a sequence of `FlashBlocks`, and executed again
-    /// when fb received on top of the same block. Avoid redundant I/O across multiple
-    /// executions within the same block.
-    cached_state: Option<(B256, CachedReads)>,
-    /// Signals when a block build is in progress
-    in_progress_tx: watch::Sender<Option<FlashBlockBuildInfo>>,
+    /// Manages flashblock sequences with caching and intelligent build selection.
+    sequences: SequenceManager<P, N::SignedTx>,
+
     /// `FlashBlock` service's metrics
     metrics: FlashBlockServiceMetrics,
     /// Enable state root calculation from flashblock with index [`FB_STATE_ROOT_FROM_INDEX`]
     compute_state_root: bool,
 }
 
-impl<N, S, EvmConfig, Provider> FlashBlockService<N, S, EvmConfig, Provider>
+impl<P, N, S, EvmConfig, Provider> FlashBlockService<P, N, S, EvmConfig, Provider>
 where
+    P: PayloadTypes,
     N: NodePrimitives,
+    P::BuiltPayload: reth_payload_primitives::BuiltPayload<Primitives = N>,
     S: Stream<Item = eyre::Result<FlashBlock>> + Unpin + 'static,
     EvmConfig: ConfigureEvm<Primitives = N, NextBlockEnvCtx: From<ExecutionPayloadBaseV1> + Unpin>
         + Clone
@@ -82,7 +81,13 @@ where
         + 'static,
 {
     /// Constructs a new `FlashBlockService` that receives [`FlashBlock`]s from `rx` stream.
-    pub fn new(rx: S, evm_config: EvmConfig, provider: Provider, spawner: TaskExecutor) -> Self {
+    pub fn new(
+        incoming_flashblock_rx: S,
+        evm_config: EvmConfig,
+        provider: Provider,
+        spawner: TaskExecutor,
+        engine_handle: ConsensusEngineHandle<P>,
+    ) -> Self {
         let (in_progress_tx, _) = watch::channel(None);
         let (received_flashblocks_tx, _) = tokio::sync::broadcast::channel(128);
         Self {
@@ -95,8 +100,7 @@ where
             rebuild: false,
             spawner,
             job: None,
-            cached_state: None,
-            in_progress_tx,
+            sequences: SequenceManager::new(engine_handle),
             metrics: FlashBlockServiceMetrics::default(),
             compute_state_root: false,
         }
