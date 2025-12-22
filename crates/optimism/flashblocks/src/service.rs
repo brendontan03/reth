@@ -35,6 +35,7 @@ pub(crate) const FB_STATE_ROOT_FROM_INDEX: usize = 9;
 /// [`FlashBlock`]s.
 #[derive(Debug)]
 pub struct FlashBlockService<
+    P: PayloadTypes,
     N: NodePrimitives,
     S,
     EvmConfig: ConfigureEvm<Primitives = N, NextBlockEnvCtx: Unpin>,
@@ -63,9 +64,11 @@ pub struct FlashBlockService<
     compute_state_root: bool,
 }
 
-impl<N, S, EvmConfig, Provider> FlashBlockService<N, S, EvmConfig, Provider>
+impl<P, N, S, EvmConfig, Provider> FlashBlockService<P, N, S, EvmConfig, Provider>
 where
+    P: PayloadTypes,
     N: NodePrimitives,
+    P::BuiltPayload: reth_payload_primitives::BuiltPayload<Primitives = N>,
     S: Stream<Item = eyre::Result<FlashBlock>> + Unpin + 'static,
     EvmConfig: ConfigureEvm<Primitives = N, NextBlockEnvCtx: From<ExecutionPayloadBaseV1> + Unpin>
         + Clone

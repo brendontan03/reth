@@ -260,9 +260,15 @@ impl<T: PayloadTypes, N: NodePrimitives> Display for EngineApiRequest<T, N> {
     }
 }
 
-impl<T: PayloadTypes, N: NodePrimitives> From<BeaconEngineMessage<T>> for EngineApiRequest<T, N> {
+impl<T: PayloadTypes, N: NodePrimitives> From<BeaconEngineMessage<T>> for EngineApiRequest<T, N>
+where
+    T::BuiltPayload: BuiltPayload<Primitives = N>,
+{
     fn from(msg: BeaconEngineMessage<T>) -> Self {
-        Self::Beacon(msg)
+        match msg {
+            BeaconEngineMessage::InsertExecutedBlock { block } => Self::InsertExecutedBlock(block),
+            _ => Self::Beacon(msg),
+        }
     }
 }
 
