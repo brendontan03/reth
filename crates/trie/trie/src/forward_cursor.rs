@@ -44,13 +44,6 @@ impl<'a, K, V> ForwardInMemoryCursor<'a, K, V> {
     pub const fn reset(&mut self) {
         self.idx = 0;
     }
-
-    #[inline]
-    fn next(&mut self) -> Option<&(K, V)> {
-        let entry = self.entries.get(self.idx)?;
-        self.idx += 1;
-        Some(entry)
-    }
 }
 
 impl<K, V> ForwardInMemoryCursor<'_, K, V>
@@ -76,16 +69,16 @@ where
     /// Returns the first entry for which `predicate` returns `false` or `None`. The cursor will
     /// point to the returned entry.
     fn advance_while(&mut self, predicate: impl Fn(&K) -> bool) -> Option<(K, V)> {
-        let mut entry;
-        loop {
-            entry = self.current();
-            if entry.is_some_and(|(k, _)| predicate(k)) {
-                self.next();
-            } else {
-                break;
+        let remaining = &self.entries[self.idx..];
+        if remaining.len() <= 32 {
+            while self.current().is_some_and(|(k, _)| predicate(k)) {
+                self.idx += 1;
             }
+        } else {
+            let offset = remaining.partition_point(|(k, _)| predicate(k));
+            self.idx += offset;
         }
-        entry.cloned()
+        self.current().cloned()
     }
 }
 
