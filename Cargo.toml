@@ -828,8 +828,8 @@ ipnet = "2.11"
 
 revm-inspectors = { git = "https://github.com/paradigmxyz/revm-inspectors", rev = "aa62b0f" }
 
-alloy-evm = { git = "https://github.com/alloy-rs/evm", rev = "9e5da2f" }
-alloy-op-evm = { git = "https://github.com/alloy-rs/evm", rev = "9e5da2f" }
+alloy-evm = { git = "https://github.com/alloy-rs/evm", rev = "71fbb7a" }
+alloy-op-evm = { git = "https://github.com/alloy-rs/evm", rev = "71fbb7a" }
 
 # revm
 revm = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }

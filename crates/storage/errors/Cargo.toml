@@ -40,4 +40,5 @@ std = [
     "revm-database-interface/std",
     "reth-prune-types/std",
     "reth-static-file-types/std",
+    "revm-state/std",
 ]
