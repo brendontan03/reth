@@ -826,17 +826,17 @@ ipnet = "2.11"
 # jsonrpsee-http-client = { git = "https://github.com/paradigmxyz/jsonrpsee", branch = "matt/make-rpc-service-pub" }
 # jsonrpsee-types = { git = "https://github.com/paradigmxyz/jsonrpsee", branch = "matt/make-rpc-service-pub" }
 
-revm-inspectors = { git = "https://github.com/paradigmxyz/revm-inspectors", rev = "b126b72" }
+revm-inspectors = { git = "https://github.com/paradigmxyz/revm-inspectors", rev = "aa62b0f" }
 
-alloy-evm = { git = "https://github.com/alloy-rs/evm", rev = "9f9fbf3" }
-alloy-op-evm = { git = "https://github.com/alloy-rs/evm", rev = "9f9fbf3" }
+alloy-evm = { git = "https://github.com/alloy-rs/evm", rev = "9e5da2f" }
+alloy-op-evm = { git = "https://github.com/alloy-rs/evm", rev = "9e5da2f" }
 
 # revm
-revm = { git = "https://github.com/bluealloy/revm", rev = "473d1ae3" }
-revm-bytecode = { git = "https://github.com/bluealloy/revm", rev = "473d1ae3" }
-revm-database = { git = "https://github.com/bluealloy/revm", rev = "473d1ae3" }
-revm-state = { git = "https://github.com/bluealloy/revm", rev = "473d1ae3" }
-revm-primitives = { git = "https://github.com/bluealloy/revm", rev = "473d1ae3" }
-revm-interpreter = { git = "https://github.com/bluealloy/revm", rev = "473d1ae3" }
-revm-database-interface = { git = "https://github.com/bluealloy/revm", rev = "473d1ae3" }
-op-revm = { git = "https://github.com/bluealloy/revm", rev = "473d1ae3" }
+revm = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }
+revm-bytecode = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }
+revm-database = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }
+revm-state = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }
+revm-primitives = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }
+revm-interpreter = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }
+revm-database-interface = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }
+op-revm = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }
