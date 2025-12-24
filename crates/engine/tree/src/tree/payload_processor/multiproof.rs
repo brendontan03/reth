@@ -1334,7 +1334,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tree::cached_state::{CachedStateProvider, ExecutionCacheBuilder};
     use alloy_eip7928::{AccountChanges, BalanceChange};
     use alloy_primitives::{map::B256Set, Address};
     use reth_provider::{
@@ -1392,7 +1391,7 @@ mod tests {
     {
         let db_provider = factory.database_provider_ro().unwrap();
         let state_provider: StateProviderBox = Box::new(LatestStateProvider::new(db_provider));
-        let cache = ExecutionCacheBuilder::default().build_caches(1000);
+        let cache = crate::tree::cached_state::ExecutionCache::new(1000);
         CachedStateProvider::new(state_provider, cache, Default::default())
     }
 
