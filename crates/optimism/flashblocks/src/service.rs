@@ -52,7 +52,7 @@ pub struct FlashBlockService<
     spawner: TaskExecutor,
     job: Option<BuildJob<N>>,
     /// Manages flashblock sequences with caching and intelligent build selection.
-    sequences: SequenceManager<P, N::SignedTx>,
+    sequences: Arc<SequenceManager<P, N::SignedTx>>,
 
     /// `FlashBlock` service's metrics
     metrics: FlashBlockServiceMetrics,
@@ -64,6 +64,7 @@ impl<P, N, S, EvmConfig, Provider> FlashBlockService<P, N, S, EvmConfig, Provide
 where
     P: PayloadTypes,
     N: NodePrimitives,
+    N::BlockHeader: reth_primitives_traits::header::HeaderMut,
     P::BuiltPayload: reth_payload_primitives::BuiltPayload<Primitives = N>,
     S: Stream<Item = eyre::Result<FlashBlock>> + Unpin + 'static,
     EvmConfig: ConfigureEvm<Primitives = N, NextBlockEnvCtx: From<ExecutionPayloadBaseV1> + Unpin>
@@ -100,7 +101,7 @@ where
             rebuild: false,
             spawner,
             job: None,
-            sequences: SequenceManager::new(engine_handle),
+            sequences: Arc::new(SequenceManager::new(engine_handle)),
             metrics: FlashBlockServiceMetrics::default(),
             compute_state_root: false,
         }
@@ -120,7 +121,7 @@ where
     }
 
     /// Returns the sender half to the flashblock sequence.
-    pub const fn block_sequence_broadcaster(
+    pub fn block_sequence_broadcaster(
         &self,
     ) -> &tokio::sync::broadcast::Sender<FlashBlockCompleteSequence> {
         self.blocks.block_sequence_broadcaster()
@@ -139,14 +140,99 @@ where
     /// Drives the services and sends new blocks to the receiver
     ///
     /// Note: this should be spawned
-    pub async fn run(mut self, tx: tokio::sync::watch::Sender<Option<PendingFlashBlock<N>>>) {
-        while let Some(block) = self.next().await {
-            if let Ok(block) = block.inspect_err(|e| tracing::error!("{e}")) {
-                let _ = tx.send(block).inspect_err(|e| tracing::error!("{e}"));
+    pub async fn run(mut self, tx: watch::Sender<Option<PendingFlashBlock<N>>>) {
+        loop {
+            tokio::select! {
+                // Event 1: job exists, listen to job results
+                Some(result) = async {
+                    match self.job.as_mut() {
+                        Some((_, rx)) => rx.await.ok(),
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    let (start_time, _) = self.job.take().unwrap();
+                    let _ = self.in_progress_tx.send(None);
+
+                    match result {
+                        Ok(Some((pending, cached_reads))) => {
+                            // Update the new pending state immediately after execution for eth api handler
+                            let parent_hash = pending.parent_hash();
+                            self.sequences
+                                .on_build_complete(parent_hash, cached_reads).await;
+                            let _ = tx.send(Some(pending.clone()));
+
+                            let elapsed = start_time.elapsed();
+                            self.metrics.execution_duration.record(elapsed.as_secs_f64());
+
+                            // For sync and flashblocks consensus. Calculate the state root if missing
+                            if pending.compute_state_root {
+                                let sequences = Arc::clone(&self.sequences);
+                                let builder = self.builder.clone();
+                                self.spawner.spawn(async move {
+                                    match builder.compute_state_root(pending) {
+                                        Ok(computed_block) => {
+                                            sequences.on_state_root_complete(parent_hash, computed_block).await;
+                                        }
+                                        Err(err) => {
+                                            warn!(target: "flashblocks", %err, "Failed to compute state root");
+                                        }
+                                    }
+                                });
+                            }
+
+
+                        }
+                        Ok(None) => {
+                            trace!(target: "flashblocks", "Build job returned None");
+                        }
+                        Err(err) => {
+                            warn!(target: "flashblocks", %err, "Build job failed");
+                        }
+                    }
+                }
+
+                // Event 2: New flashblock arrives (batch process all ready flashblocks)
+                result = self.incoming_flashblock_rx.next() => {
+                    match result {
+                        Some(Ok(flashblock)) => {
+                            // Process first flashblock
+                            self.process_flashblock(flashblock).await;
+
+                            // Batch process all other immediately available flashblocks
+                            while let Some(result) = self.incoming_flashblock_rx.next().now_or_never().flatten() {
+                                match result {
+                                    Ok(fb) => self.process_flashblock(fb).await,
+                                    Err(err) => warn!(target: "flashblocks", %err, "Error receiving flashblock"),
+                                }
+                            }
+
+                            self.try_start_build_job().await;
+                        }
+                        Some(Err(err)) => {
+                            warn!(target: "flashblocks", %err, "Error receiving flashblock");
+                        }
+                        None => {
+                            warn!(target: "flashblocks", "Flashblock stream ended");
+                            break;
+                        }
+                    }
+                }
             }
         }
+    }
 
-        warn!("Flashblock service has stopped");
+    /// Processes a single flashblock: notifies subscribers, records metrics, and inserts into
+    /// sequence.
+    async fn process_flashblock(&self, flashblock: FlashBlock) {
+        self.notify_received_flashblock(&flashblock);
+
+        if flashblock.index == 0 {
+            self.metrics.last_flashblock_length.record(self.sequences.pending_count().await as f64);
+        }
+
+        if let Err(err) = self.sequences.insert_flashblock(flashblock).await {
+            trace!(target: "flashblocks", %err, "Failed to insert flashblock");
+        }
     }
 
     /// Notifies all subscribers about the received flashblock
@@ -156,211 +242,38 @@ where
         }
     }
 
-    /// Returns the [`BuildArgs`] made purely out of [`FlashBlock`]s that were received earlier.
-    ///
-    /// Returns `None` if the flashblock have no `base` or the base is not a child block of latest.
-    fn build_args(
-        &mut self,
-    ) -> Option<
-        BuildArgs<
-            impl IntoIterator<Item = WithEncoded<Recovered<N::SignedTx>>>
-                + use<N, S, EvmConfig, Provider>,
-        >,
-    > {
-        let Some(base) = self.blocks.payload_base() else {
-            trace!(
-                flashblock_number = ?self.blocks.block_number(),
-                count = %self.blocks.count(),
-                "Missing flashblock payload base"
-            );
+    /// Attempts to build a block if no job is currently running and a buildable sequence exists.
+    async fn try_start_build_job(&mut self) {
+        if self.job.is_some() {
+            return; // Already building
+        }
 
-            return None
+        let Some(latest) = self.builder.provider().latest_header().ok().flatten() else {
+            return;
         };
 
-        // attempt an initial consecutive check
-        if let Some(latest) = self.builder.provider().latest_header().ok().flatten() &&
-            latest.hash() != base.parent_hash
-        {
-            trace!(flashblock_parent=?base.parent_hash, flashblock_number=base.block_number, local_latest=?latest.num_hash(), "Skipping non consecutive build attempt");
-            return None
-        }
-
-        let Some(last_flashblock) = self.blocks.last_flashblock() else {
-            trace!(flashblock_number = ?self.blocks.block_number(), count = %self.blocks.count(), "Missing last flashblock");
-            return None
+        let Some(args) =
+            self.sequences.next_buildable_args(latest.hash(), latest.timestamp()).await
+        else {
+            return; // Nothing buildable
         };
 
-        // Check if state root must be computed
-        let compute_state_root =
-            self.compute_state_root && self.blocks.index() >= Some(FB_STATE_ROOT_FROM_INDEX as u64);
+        // Spawn build job
+        let fb_info = FlashBlockBuildInfo {
+            parent_hash: args.base.parent_hash,
+            index: args.last_flashblock_index,
+            block_number: args.base.block_number,
+        };
+        self.metrics.current_block_height.set(fb_info.block_number as f64);
+        self.metrics.current_index.set(fb_info.index as f64);
+        let _ = self.in_progress_tx.send(Some(fb_info));
 
-        Some(BuildArgs {
-            base,
-            transactions: self.blocks.ready_transactions().collect::<Vec<_>>(),
-            cached_state: self.cached_state.take(),
-            last_flashblock_index: last_flashblock.index,
-            last_flashblock_hash: last_flashblock.diff.block_hash,
-            compute_state_root,
-        })
-    }
-
-    /// Takes out `current` [`PendingFlashBlock`] if `state` is not preceding it.
-    fn on_new_tip(&mut self, state: CanonStateNotification<N>) -> Option<PendingFlashBlock<N>> {
-        let tip = state.tip_checked()?;
-        let tip_hash = tip.hash();
-        let current = self.current.take_if(|current| current.parent_hash() != tip_hash);
-
-        // Prefill the cache with state from the new canonical tip, similar to payload/basic
-        let mut cached = CachedReads::default();
-        let committed = state.committed();
-        let new_execution_outcome = committed.execution_outcome();
-        for (addr, acc) in new_execution_outcome.bundle_accounts_iter() {
-            if let Some(info) = acc.info.clone() {
-                // Pre-cache existing accounts and their storage (only changed accounts/storage)
-                let storage =
-                    acc.storage.iter().map(|(key, slot)| (*key, slot.present_value)).collect();
-                cached.insert_account(addr, info, storage);
-            }
-        }
-        self.cached_state = Some((tip_hash, cached));
-
-        current
-    }
-}
-
-impl<N, S, EvmConfig, Provider> Stream for FlashBlockService<N, S, EvmConfig, Provider>
-where
-    N: NodePrimitives,
-    S: Stream<Item = eyre::Result<FlashBlock>> + Unpin + 'static,
-    EvmConfig: ConfigureEvm<Primitives = N, NextBlockEnvCtx: From<ExecutionPayloadBaseV1> + Unpin>
-        + Clone
-        + 'static,
-    Provider: StateProviderFactory
-        + CanonStateSubscriptions<Primitives = N>
-        + BlockReaderIdExt<
-            Header = HeaderTy<N>,
-            Block = BlockTy<N>,
-            Transaction = N::SignedTx,
-            Receipt = ReceiptTy<N>,
-        > + Unpin
-        + Clone
-        + 'static,
-{
-    type Item = eyre::Result<Option<PendingFlashBlock<N>>>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-
-        loop {
-            // drive pending build job to completion
-            let result = match this.job.as_mut() {
-                Some((now, rx)) => {
-                    let result = ready!(rx.poll_unpin(cx));
-                    result.ok().map(|res| (*now, res))
-                }
-                None => None,
-            };
-            // reset job
-            this.job.take();
-            // No build in progress
-            let _ = this.in_progress_tx.send(None);
-
-            if let Some((now, result)) = result {
-                match result {
-                    Ok(Some((new_pending, cached_reads))) => {
-                        // update state root of the current sequence
-                        this.blocks.set_state_root(new_pending.computed_state_root());
-
-                        // built a new pending block
-                        this.current = Some(new_pending.clone());
-                        // cache reads
-                        this.cached_state = Some((new_pending.parent_hash(), cached_reads));
-                        this.rebuild = false;
-
-                        let elapsed = now.elapsed();
-                        this.metrics.execution_duration.record(elapsed.as_secs_f64());
-                        trace!(
-                            parent_hash = %new_pending.block().parent_hash(),
-                            block_number = new_pending.block().number(),
-                            flash_blocks = this.blocks.count(),
-                            ?elapsed,
-                            "Built new block with flashblocks"
-                        );
-
-                        return Poll::Ready(Some(Ok(Some(new_pending))));
-                    }
-                    Ok(None) => {
-                        // nothing to do because tracked flashblock doesn't attach to latest
-                    }
-                    Err(err) => {
-                        // we can ignore this error
-                        debug!(%err, "failed to execute flashblock");
-                    }
-                }
-            }
-
-            // consume new flashblocks while they're ready
-            while let Poll::Ready(Some(result)) = this.rx.poll_next_unpin(cx) {
-                match result {
-                    Ok(flashblock) => {
-                        this.notify_received_flashblock(&flashblock);
-                        if flashblock.index == 0 {
-                            this.metrics.last_flashblock_length.record(this.blocks.count() as f64);
-                        }
-                        match this.blocks.insert(flashblock) {
-                            Ok(_) => this.rebuild = true,
-                            Err(err) => debug!(%err, "Failed to prepare flashblock"),
-                        }
-                    }
-                    Err(err) => return Poll::Ready(Some(Err(err))),
-                }
-            }
-
-            // update on new head block
-            if let Poll::Ready(Ok(state)) = {
-                let fut = this.canon_receiver.recv();
-                pin!(fut);
-                fut.poll_unpin(cx)
-            } && let Some(current) = this.on_new_tip(state)
-            {
-                trace!(
-                    parent_hash = %current.block().parent_hash(),
-                    block_number = current.block().number(),
-                    "Clearing current flashblock on new canonical block"
-                );
-
-                return Poll::Ready(Some(Ok(None)))
-            }
-
-            if !this.rebuild && this.current.is_some() {
-                return Poll::Pending
-            }
-
-            // try to build a block on top of latest
-            if let Some(args) = this.build_args() {
-                let now = Instant::now();
-
-                let fb_info = FlashBlockBuildInfo {
-                    parent_hash: args.base.parent_hash,
-                    index: args.last_flashblock_index,
-                    block_number: args.base.block_number,
-                };
-                // Signal that a flashblock build has started with build metadata
-                let _ = this.in_progress_tx.send(Some(fb_info));
-                let (tx, rx) = oneshot::channel();
-                let builder = this.builder.clone();
-
-                this.spawner.spawn_blocking(async move {
-                    let _ = tx.send(builder.execute(args));
-                });
-                this.job.replace((now, rx));
-
-                // continue and poll the spawned job
-                continue
-            }
-
-            return Poll::Pending
-        }
+        let (tx, rx) = oneshot::channel();
+        let builder = self.builder.clone();
+        self.spawner.spawn_blocking(Box::pin(async move {
+            let _ = tx.send(builder.execute(args));
+        }));
+        self.job = Some((Instant::now(), rx));
     }
 }
 
