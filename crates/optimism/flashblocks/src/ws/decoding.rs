@@ -4,32 +4,21 @@ use alloy_rpc_types_engine::PayloadId;
 use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, io};
 
-/// Internal helper for decoding
-#[derive(Clone, Debug, PartialEq, Default, Deserialize, Serialize)]
-struct FlashblocksPayloadV1 {
-    /// The payload id of the flashblock
-    pub payload_id: PayloadId,
-    /// The index of the flashblock in the block
-    pub index: u64,
-    /// The base execution payload configuration
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub base: Option<ExecutionPayloadBaseV1>,
-    /// The delta/diff containing modified portions of the execution payload
-    pub diff: ExecutionPayloadFlashblockDeltaV1,
-    /// Additional metadata associated with the flashblock
-    pub metadata: serde_json::Value,
+/// A trait for decoding flashblocks from bytes.
+pub trait FlashBlockDecoder: Send + Sync + 'static {
+    /// Decodes `bytes` into a [`FlashBlock`].
+    fn decode(&self, bytes: Bytes) -> eyre::Result<FlashBlock>;
 }
 
-impl FlashBlock {
-    /// Decodes `bytes` into [`FlashBlock`].
-    ///
-    /// This function is specific to the Base Optimism websocket encoding.
-    ///
-    /// It is assumed that the `bytes` are encoded in JSON and optionally compressed using brotli.
-    /// Whether the `bytes` is compressed or not is determined by looking at the first
-    /// non ascii-whitespace character.
-    pub(crate) fn decode(bytes: Bytes) -> eyre::Result<Self> {
-        let bytes = try_parse_message(bytes)?;
+/// Default implementation of the decoder.
+impl FlashBlockDecoder for () {
+    fn decode(&self, bytes: Bytes) -> eyre::Result<FlashBlock> {
+        decode_flashblock(bytes)
+    }
+}
+
+pub(crate) fn decode_flashblock(bytes: Bytes) -> eyre::Result<FlashBlock> {
+    let bytes = crate::ws::decoding::try_parse_message(bytes)?;
 
         let payload: FlashblocksPayloadV1 = serde_json::from_slice(&bytes)
             .map_err(|e| eyre::eyre!("failed to parse message: {e}"))?;
