@@ -82,34 +82,6 @@ impl RocksDBProvider {
     pub const fn batch(&self) -> RocksDBBatch {
         RocksDBBatch
     }
-
-    /// Gets the first key-value pair from a table (stub implementation).
-    pub const fn first<T: Table>(&self) -> ProviderResult<Option<(T::Key, T::Value)>> {
-        Ok(None)
-    }
-
-    /// Gets the last key-value pair from a table (stub implementation).
-    pub const fn last<T: Table>(&self) -> ProviderResult<Option<(T::Key, T::Value)>> {
-        Ok(None)
-    }
-
-    /// Creates an iterator for the specified table (stub implementation).
-    ///
-    /// Returns an empty iterator. This is consistent with `first()` and `last()` returning
-    /// `Ok(None)` - the stub behaves as if the database is empty rather than unavailable.
-    pub const fn iter<T: Table>(&self) -> ProviderResult<RocksDBIter<'_, T>> {
-        Ok(RocksDBIter { _marker: std::marker::PhantomData })
-    }
-
-    /// Check consistency of `RocksDB` tables (stub implementation).
-    ///
-    /// Returns `None` since there is no `RocksDB` data to check when the feature is disabled.
-    pub const fn check_consistency<Provider>(
-        &self,
-        _provider: &Provider,
-    ) -> ProviderResult<Option<alloy_primitives::BlockNumber>> {
-        Ok(None)
-    }
 }
 
 /// A stub batch writer for `RocksDB` on non-Unix platforms.
@@ -118,13 +90,13 @@ pub struct RocksDBBatch;
 
 impl RocksDBBatch {
     /// Puts a value into the batch (stub implementation).
-    pub fn put<T: Table>(&self, _key: T::Key, _value: &T::Value) -> ProviderResult<()> {
+    pub fn put<T: Table>(&mut self, _key: T::Key, _value: &T::Value) -> ProviderResult<()> {
         Err(UnsupportedProvider)
     }
 
     /// Puts a value into the batch using pre-encoded key (stub implementation).
     pub const fn put_encoded<T: Table>(
-        &self,
+        &mut self,
         _key: &<T::Key as Encode>::Encoded,
         _value: &T::Value,
     ) -> ProviderResult<()> {
@@ -132,7 +104,7 @@ impl RocksDBBatch {
     }
 
     /// Deletes a value from the batch (stub implementation).
-    pub fn delete<T: Table>(&self, _key: T::Key) -> ProviderResult<()> {
+    pub fn delete<T: Table>(&mut self, _key: T::Key) -> ProviderResult<()> {
         Err(UnsupportedProvider)
     }
 
@@ -140,19 +112,15 @@ impl RocksDBBatch {
     pub const fn commit(self) -> ProviderResult<()> {
         Err(UnsupportedProvider)
     }
-}
 
-/// A stub iterator for `RocksDB` (non-transactional).
-#[derive(Debug)]
-pub struct RocksDBIter<'a, T> {
-    _marker: std::marker::PhantomData<(&'a (), T)>,
-}
+    /// Returns the number of operations in this batch (stub implementation).
+    pub const fn len(&self) -> usize {
+        0
+    }
 
-impl<T: Table> Iterator for RocksDBIter<'_, T> {
-    type Item = ProviderResult<(T::Key, T::Value)>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        None
+    /// Returns `true` if the batch is empty (stub implementation).
+    pub const fn is_empty(&self) -> bool {
+        true
     }
 }
 
@@ -264,12 +232,4 @@ impl RocksTx {
 #[derive(Debug)]
 pub struct RocksTxIter<'a, T> {
     _marker: std::marker::PhantomData<(&'a (), T)>,
-}
-
-impl<T: Table> Iterator for RocksTxIter<'_, T> {
-    type Item = ProviderResult<(T::Key, T::Value)>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        None
-    }
 }
