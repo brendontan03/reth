@@ -1333,6 +1333,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::tree::cached_state::CachedStateProvider;
+
     use super::*;
     use alloy_eip7928::{AccountChanges, BalanceChange};
     use alloy_primitives::{map::B256Set, Address};
