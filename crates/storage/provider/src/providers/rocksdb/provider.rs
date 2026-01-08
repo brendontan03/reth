@@ -1,5 +1,5 @@
 use super::metrics::{RocksDBMetrics, RocksDBOperation};
-use crate::providers::HistoryInfo;
+use crate::providers::{needs_prev_shard_check, HistoryInfo};
 use alloy_primitives::{Address, BlockNumber, B256};
 use reth_db_api::{
     models::{storage_sharded_key::StorageShardedKey, ShardedKey},
@@ -782,7 +782,7 @@ impl<'db> RocksTx<'db> {
         // Lazy check for previous shard - only called when needed.
         // If we can step to a previous shard for this same key, history already exists,
         // so the target block is not before the first write.
-        let is_before_first_write = if rank == 0 && found_block != Some(block_number) {
+        let is_before_first_write = if needs_prev_shard_check(rank, found_block, block_number) {
             iter.prev();
             Self::raw_iter_status_ok(&iter)?;
             let has_prev = iter.valid() && iter.key().is_some_and(&prev_key_matches);
