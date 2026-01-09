@@ -21,7 +21,7 @@ use reth_engine_primitives::{ConsensusEngineHandle, EngineApiValidator, EngineTy
 use reth_network_api::NetworkInfo;
 use reth_payload_builder::PayloadStore;
 use reth_payload_primitives::{
-    validate_payload_timestamp, EngineApiMessageVersion, MessageValidationKind,
+    validate_payload_timestamp, EngineApiMessageVersion, MessageValidationKind, ExecutionPayload,
     PayloadOrAttributes, PayloadTypes,
 };
 use reth_primitives_traits::{Block, BlockBody};
@@ -245,10 +245,18 @@ where
         payload: PayloadT::ExecutionData,
     ) -> RpcResult<PayloadStatus> {
         let start = Instant::now();
+        let tx_count = payload.transaction_count();
         let res = Self::new_payload_v4(self, payload).await;
 
         let elapsed = start.elapsed();
         self.inner.metrics.latency.new_payload_v4.record(elapsed);
+        if tx_count > 1 {
+            tracing::info!(
+                latency_secs = elapsed.as_secs_f64(),
+                tx_count,
+                "newPayload"
+            );
+        }
         Ok(res?)
     }
 
