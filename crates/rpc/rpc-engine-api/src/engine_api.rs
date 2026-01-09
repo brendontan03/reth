@@ -272,12 +272,19 @@ where
     ) -> RpcResult<PayloadStatus> {
         let start = Instant::now();
         let gas_used = payload.gas_used();
-
+        let tx_count = payload.transaction_count();
         let res = Self::new_payload_v4(self, payload).await;
 
         let elapsed = start.elapsed();
         self.inner.metrics.latency.new_payload_v4.record(elapsed);
         self.inner.metrics.new_payload_response.update_response_metrics(&res, gas_used, elapsed);
+        if tx_count > 1 {
+            tracing::info!(
+                latency_secs = elapsed.as_secs_f64(),
+                tx_count,
+                "newPayload"
+            );
+        }
         Ok(res?)
     }
 
