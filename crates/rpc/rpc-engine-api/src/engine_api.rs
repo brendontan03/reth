@@ -246,6 +246,7 @@ where
     ) -> RpcResult<PayloadStatus> {
         let start = Instant::now();
         let tx_count = payload.transaction_count();
+        let block_number = payload.block_number();
         let res = Self::new_payload_v4(self, payload).await;
 
         let elapsed = start.elapsed();
@@ -254,6 +255,7 @@ where
             tracing::info!(
                 latency_secs = elapsed.as_secs_f64(),
                 tx_count,
+                block_number,
                 "newPayload"
             );
         }
